@@ -1,5 +1,7 @@
 # Python point-to-point VPN
 
+**Teammates: start with [TEAM_SETUP.md](TEAM_SETUP.md)** for repository access, cloud/laptop setup, demo steps, and troubleshooting.
+
 A Linux TUN tunnel using UDP and AES-256-GCM. Python 3.10+ and `cryptography` are the only Python dependencies. Run both endpoints with root privileges. This is a one-peer demonstration implementation.
 
 ```text
