@@ -86,7 +86,7 @@ class ServiceTests(unittest.TestCase):
             client.connect(server.getsockname())
             # A forged hello must not pin the server to the wrong source port.
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as attacker:
-                attacker.sendto(b'PYVPN1C' + b'x' * 64, server.getsockname())
+                attacker.sendto(b'PYVPN2C' + b'x' * 96, server.getsockname())
             with concurrent.futures.ThreadPoolExecutor(2) as pool:
                 sf = pool.submit(handshake, server, 'shared-test-secret', 'server', 3, '127.0.0.1')
                 cf = pool.submit(handshake, client, 'shared-test-secret', 'client', 3)

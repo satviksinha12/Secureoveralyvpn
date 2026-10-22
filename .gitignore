@@ -29,3 +29,9 @@ results/*
 .vscode/
 .idea/
 .DS_Store
+
+# Durable session seeds, nonce reservations, and replay databases
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*

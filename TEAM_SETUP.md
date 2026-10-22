@@ -125,7 +125,7 @@ Replace HOME_PUBLIC_IP in this command with the numeric address from step 4:
 sudo env VPN_PSK="$VPN_PSK" .venv/bin/python vpn.py --mode server --peer-ip HOME_PUBLIC_IP --handshake-timeout 600 --verbose
 ```
 
-“Waiting for authenticated peer” is expected until the laptop starts. The startup timeout is ten minutes. Do not run `--mode client` on the cloud VM for this demo.
+“Waiting for authenticated peer” is expected until the laptop starts. Each startup round has a ten-minute timeout and retries automatically. Do not run `--mode client` on the cloud VM for this demo.
 
 Detach tmux with **Ctrl+B**, release, then **D**. This leaves the server running. **Ctrl+Z suspends the process and breaks the demo.**
 
@@ -247,7 +247,7 @@ These are earlier user-run measurements. Record your own results if you repeat t
 | Waiting for authenticated peer | Check both roles, matching PSKs, current public IPs, UDP firewall, and identical code versions. Do not ping until both are ready. |
 | tun0 missing / dashboard offline | Inspect the VPN terminal for an exit/error. Ping cannot use this tunnel while the process is down. |
 | Route to 10.8.0.1 uses Wi-Fi | TUN is absent or a route conflicts; inspect interface and VPN startup first. |
-| `Connection refused` in VPN terminal | An established UDP socket received an error. Collect both logs; current code exits instead of reconnecting automatically. Restart both endpoints for a fresh session. |
+| `Connection refused` in VPN terminal | The process now retries transient UDP errors automatically. Watch connection_state and both logs; check firewall and peer availability if it keeps retrying. |
 | Only one packet in pcap | Repeat capture while fresh tunnel ping traffic is actively flowing. |
 | iperf address in use | Inspect `sudo ss -ltnp 'sport = :5202'` for an earlier listener before starting another. |
 | Browser SSH closes | Reconnect and attach tmux; check server stats before launching another server. |
@@ -256,7 +256,23 @@ When diagnosing port conflicts, use **ss -uanp**, not only ss -lunp: connected U
 
 ### Stopping safely
 
-Use Ctrl+C in each original VPN terminal. The current startup loop does not promptly obey Ctrl+C/SIGTERM while waiting for authentication. If a confirmed VPN process will not exit, identify its exact PID with ss and `ps -p PID -o pid,args`; use `sudo kill PID`, then `sudo kill -9 PID` only if it remains stuck. Never kill all Python processes indiscriminately. Restart **both endpoints together** after ending a session; keys are newly derived at startup.
+Use Ctrl+C in each original VPN terminal. Ctrl+C/SIGTERM cancels both an active session and a waiting handshake. Do not use Ctrl+Z, which suspends a process while leaving its ports occupied. If diagnosing an older frozen process, verify its PID with `ss` and `ps -p PID -o pid,args` before stopping that specific process. Never kill all Python processes indiscriminately.
+
+### Reconnection and retained traffic keys
+
+Update **both endpoints** before using this version; protocol v2 is incompatible with the original demo version. Automatic reconnect and encrypted keepalives are enabled without additional flags. A process restart still requires relaunching its command, but the other endpoint can remain running and retry.
+
+For keys to survive process restarts, create a private state directory on each machine:
+
+```bash
+sudo install -d -m 700 /var/lib/pyvpn
+```
+
+Add `--state-file /var/lib/pyvpn/server.sqlite` to the cloud command and `--state-file /var/lib/pyvpn/client.sqlite` to the laptop command. Keep using those same local files and the same PSK. Enter the PSK again when starting a new shell; it is not saved by this option.
+
+State saves the derivation seed, reserved send-counter ranges, and receive replay window. Never share, copy, or restore an older state database: rolling it back can break nonce/replay safety. After restoring a VM snapshot, rotate the PSK and use new state paths on both peers. State filenames are ignored by Git. See [README.md](README.md#automatic-reconnect-and-restart-safe-sessions-protocol-v2) for details.
+
+To demonstrate recovery, keep ping running, stop one VPN process with Ctrl+C, then restart it with the same command, PSK, and state path. The survivor should retry and reconnect. Default keepalives run every 5 seconds, peer timeout is 20 seconds, and retry delay is 2 seconds. This is not guaranteed to recover instantly, and packets may be lost during the outage. Watch `connection_state` and `reconnects` on the dashboard. Repeat the test with the opposite endpoint.
 
 ## 15. What each teammate should be able to explain
 

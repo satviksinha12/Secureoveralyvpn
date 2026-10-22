@@ -36,7 +36,7 @@ with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0800)) as c
         src, dst, length = struct.unpack('!HHH', packet[ihl:ihl + 6])
         if dst == args.port and packet[12:16] == peer:
             payload = packet[ihl + 8:ihl + length]
-            if payload.startswith(b'PYVPN1') or payload.startswith(b'ACK'):
+            if payload.startswith(b'PYVPN') or payload.startswith(b'ACK'):
                 continue
             packet = packet[:struct.unpack('!H', packet[2:4])[0]]
             break

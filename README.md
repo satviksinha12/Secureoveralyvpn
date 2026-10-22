@@ -48,7 +48,7 @@ sudo ip netns exec server_ns curl http://127.0.0.1:5000/stats
 sudo bash teardown_ns.sh
 ```
 
-Use `openssl rand -hex 32` or Python's `secrets.token_hex(32)` to generate the PSK. Prefer `VPN_PSK` to the `--psk` option so it does not appear in command-line listings. Root can still inspect process environments. Both peers bind the chosen UDP port. The client contacts the configured server IP/port; the server learns the client source port from a PSK-authenticated hello from the configured client IP, then filters traffic to that endpoint. Start both within the default 60-second handshake timeout. Restart both endpoints together after either stops.
+Use `openssl rand -hex 32` or Python's `secrets.token_hex(32)` to generate the PSK. Prefer `VPN_PSK` to the `--psk` option so it does not appear in command-line listings. Root can still inspect process environments. Both peers bind the chosen UDP port. The client contacts the configured server IP/port; the server learns the client source port from a PSK-authenticated hello from the configured client IP, then filters traffic to that endpoint. Start both endpoints; failed handshake rounds automatically retry. The default 60-second handshake timeout applies to each round.
 
 TUN is created using `/dev/net/tun`, `fcntl.ioctl`, and `IFF_TUN | IFF_NO_PI`. Each endpoint configures its /24 address and MTU 1400 with `ip`. The resulting connected route sends traffic for 10.8.0.0/24 into TUN. The main loop uses `select()` on TUN and UDP. Closing the file descriptor removes the nonpersistent TUN device.
 
@@ -67,15 +67,17 @@ nonce = four zero bytes || sequence (8 BE)
 
 Sequence numbers start at zero independently in each direction. Overflow stops transmission. Each direction uses a different 256-bit key. Packet overhead is 36 bytes plus the outer UDP/IP headers. Counters measure inner IP bytes successfully sent or written to TUN, rather than outer wire bytes.
 
-HKDF-SHA256 derives a master authentication key from the PSK using a protocol-specific salt and label. Startup uses `PYVPN1 || role(1) || random(32) || HMAC-SHA256(32)`. Each side generates a fresh cryptographic random contribution. A `ACK || role(1) || HMAC-SHA256(32)` message confirms both contributions in server/client order. HKDF then derives separate server-to-client and client-to-server AES keys from the master and both contributions.
+HKDF-SHA256 derives a master authentication key from the PSK using a protocol-specific salt and label. Protocol v2 startup uses `PYVPN2 || role(1) || seed(32) || challenge(32) || HMAC-SHA256(32)`. Challenges are fresh for every attempt. A `ACK || role(1) || HMAC-SHA256(32)` confirmation binds both seeds and fresh challenges in server/client order. HKDF derives separate directional traffic keys from the PSK-derived master and the ordered seeds. Changing either seed creates new traffic keys.
 
-Fresh session keys make restarting counters safe; nonce uniqueness within a session follows from the counter. This relies on the OS cryptographic random generator for fresh sessions. This startup exchange uses library HMAC/HKDF; there is no custom cipher implementation. It is PSK authentication, **not X25519**, and does not provide forward secrecy. Random contributions and packet lengths/timing are public. Captures permit offline guessing of weak PSKs, so use a generated secret. No data packets are accepted until startup completes. Startup retries every 300 ms and times out; severe packet loss during final confirmation can require restarting both endpoints. Established sessions do not accept renegotiation.
+By default seeds are random per handshake, so reconnects use fresh traffic keys. With `--state-file`, each peer retains its seed and its per-key nonce/replay state; using the same PSK and both saved seeds regenerates the same directional traffic keys after a restart. Fresh challenges still authenticate every reconnect. This is PSK authentication, **not X25519**, and does not provide forward secrecy. Weak PSKs permit offline guessing. Both endpoints must run protocol v2; earlier versions are incompatible.
+
+Handshake messages retry every 300 ms. A completed peer answers repeated matching hellos so lost final confirmations can recover. After an idle-peer timeout, a new handshake learns a changed NAT source port. Arbitrary packets cannot extend the authenticated peer liveness timer. See the persistence section below for restart-safety requirements.
 
 A 64-packet replay bitmap accepts reordered packets within the window once each. Authentication succeeds before the bitmap changes, so forged sequence numbers cannot advance it. Packets at least 64 behind the highest accepted sequence and duplicates are dropped. Short/oversized datagrams, invalid tags, and invalid IP packets are rejected and counted. Invalid tags and drops are logged. No retransmission is added to UDP.
 
 ## Dashboard
 
-A standard-library `ThreadingHTTPServer` runs in a background thread on loopback port 5000 in each namespace. `/` refreshes every two seconds; `/stats` returns JSON. This preserves the requirement of only one third-party dependency instead of adding Flask. Stats access is protected by a lock. `last_seen` is Unix time for the most recent accepted inbound IP packet; drop counters distinguish authentication, replay, and malformed input.
+A standard-library `ThreadingHTTPServer` runs in a background thread on loopback port 5000 in each namespace. `/` refreshes every two seconds; `/stats` returns JSON. This preserves the requirement of only one third-party dependency instead of adding Flask. Stats access is protected by a lock. `last_seen` is Unix time for the most recent accepted authenticated packet, including a keepalive; drop counters distinguish authentication, replay, and malformed input.
 
 To view in a browser, explicitly bind the server dashboard to its veth IP with `--dashboard-bind 192.0.2.1` and run a browser in a namespace with connectivity to it. The default loopback binding keeps this unauthenticated dashboard local to its namespace.
 
@@ -99,7 +101,7 @@ sudo env PATH="$PWD/.venv/bin:$PATH" bash tests/demo.sh
 | Direct veth TCP Mbit/s | Not measured: iperf3 missing |
 | Tunnel TCP Mbit/s | Not measured: iperf3 missing |
 
-Eight automated tests passed, including authenticated discovery of a different client source port, including rejection of mismatched PSKs and dashboard JSON/refresh checks. The live UDP test was run outside the restricted socket sandbox. The full root demo was attempted but `sudo -n` reported that a password is required. This environment also lacks tcpdump. No network benchmark values or successful TUN demo results are claimed. Run the complete demo on Ubuntu to produce measured results in `results/benchmark.md`.
+Seventeen automated tests pass. The suite covers crypto, authenticated endpoint discovery, wrong-PSK rejection, dashboard serving, durable nonce reservations, persistent replay rejection, fresh reconnect challenges, encrypted keepalives, cancellation, and retry behavior. The live UDP test was run outside the restricted socket sandbox. The full root demo was attempted but `sudo -n` reported that a password is required. This environment also lacks tcpdump. No network benchmark values or successful TUN demo results are claimed. Run the complete demo on Ubuntu to produce measured results in `results/benchmark.md`.
 
 `tests/attack.py` runs in server_ns, captures an actual incoming tunnel datagram from `veth_s`, resends its IP/UDP bytes using a raw socket, then flips a ciphertext/tag byte and resends. IPv4 UDP checksum is zeroed to ensure GCM, rather than UDP checksum validation, rejects the tamper. It asserts that both relevant drop counters increase. Run it before generating ping traffic; `tests/demo.sh` handles this order.
 
@@ -120,7 +122,7 @@ The plaintext-only development milestone could not be validated without TUN/root
 - Packet loss analytics.
 - Certificate-based authentication.
 - X25519 exchange authenticated with the PSK for forward secrecy.
-- More robust handshake loss recovery, rekeying, and automatic peer restart recovery.
+- Periodic rekeying, stronger denial-of-service resistance, and extended network-fault testing.
 
 ## Google Cloud VM server
 
@@ -148,7 +150,7 @@ ping -c 5 10.8.0.1
 
 Replace the uppercase address placeholders with numeric IPv4 addresses. The server binds `0.0.0.0`; do not try to assign its Google Cloud external IPv4 to a local interface. The tunnel addresses remain 10.8.0.1 and 10.8.0.2. Check for conflicts with existing local routes to 10.8.0.0/24.
 
-**Home Wi-Fi:** the client initiates outbound UDP to the VM, and the server learns its NAT-mapped source port from a PSK-authenticated startup packet. Router port forwarding is not required. Use the home network's public IPv4 as the server's `--peer-ip`, rather than the client's private 192.168.x.x address. The server remains pinned to the authenticated endpoint for the session. Restart both peers if the public IP or NAT mapping changes. A network that blocks outbound UDP will still prevent connection. There is no idle keepalive yet; after prolonged inactivity, NAT may expire the mapping, requiring both peers to restart.
+**Home Wi-Fi:** the client initiates outbound UDP to the VM, and the server learns its NAT-mapped source port from a PSK-authenticated startup packet. Router port forwarding is not required. Use the home network's public IPv4 as the server's `--peer-ip`, rather than the client's private 192.168.x.x address. The server remains pinned to the authenticated endpoint for the session. Encrypted keepalives maintain activity, and timed-out sessions automatically retry and relearn the NAT port. If the home public IP changes, update the server peer IP and firewall source range; use a different state file for a different configured peer. A network that blocks outbound UDP still prevents connection.
 
 Keep dashboard port 5000 on loopback. To view the VM dashboard from your local browser, forward it through SSH:
 
@@ -196,3 +198,34 @@ iperf3 -c 10.8.0.1 -t 10 -J > results/cloud-tunnel.json
 ```
 
 This needs no public iperf firewall opening. A direct cloud comparison requires a separate iperf listener on the VM internal address and a temporary TCP 5201 VPC/guest firewall allowance restricted to the home public IP. That compares the same internet path with/without tunneling; it is distinct from the direct-veth namespace benchmark. Remove the temporary allowance afterward.
+
+
+## Automatic reconnect and restart-safe sessions (protocol v2)
+
+Both peers automatically retry startup and recover after peer timeouts or transient UDP errors. Defaults are `--keepalive 5`, `--peer-timeout 20`, and `--reconnect-delay 2` (seconds). `--handshake-timeout` bounds each attempt, not total process lifetime. Recovery can take a peer timeout plus a handshake round; queued TUN packets may be lost during outages. TUN and the dashboard stay available while reconnecting. `connection_state` reports connecting/connected/reconnecting, and `reconnects` counts failed rounds or established connection failures. Ctrl+C/SIGTERM now cancels a waiting handshake promptly. Stopping the process still requires starting it again manually or through a process supervisor.
+
+To retain traffic keys through restarts, enable persistence on **both machines**. Once on each machine:
+
+```bash
+sudo install -d -m 700 /var/lib/pyvpn
+```
+
+Start the server with its existing PSK and addresses, adding:
+
+```bash
+sudo env VPN_PSK="$VPN_PSK" .venv/bin/python vpn.py --mode server --peer-ip HOME_PUBLIC_IP --state-file /var/lib/pyvpn/server.sqlite --verbose
+```
+
+On the client:
+
+```bash
+sudo env VPN_PSK="$VPN_PSK" .venv/bin/python vpn.py --mode client --peer-ip VM_EXTERNAL_IP --state-file /var/lib/pyvpn/client.sqlite --verbose
+```
+
+The PSK must still be supplied after a process restart; it is not stored in the database. The database retains the local derivation seed and per-key sequence/replay state, allowing the same traffic keys to be regenerated. It must be a mode-0600 regular file in a mode-0700 directory owned by the process user (root for sudo). Concurrent use of a state file is refused. It is bound to the configured mode, peer IP, and PSK; use a new file when changing these settings. Never share a state file between endpoints or running instances. State errors are fatal: the program will not silently reset counters under retained keys.
+
+Before sending, SQLite commits a reservation for the next 4096 sequence numbers with synchronous=FULL. Restart skips unused reserved numbers, so even an abrupt process exit cannot reuse already-issued nonces, provided storage honors durable writes. Incoming replay state is committed **before** delivering each authenticated packet. This intentionally adds a disk transaction per received datagram and can reduce throughput. The previous 13.2 Mbit/s result predates persistence and is not a benchmark of this version. Process counters reset on restart; cryptographic counters do not.
+
+**Never restore or roll back an old session-state backup, clone a VM with active state, or copy the database to another sender.** A rollback can reuse nonces or admit old packets. If restoring a machine snapshot, stop both peers, rotate the PSK, and use new state files on both. A local database cannot detect rollback of itself. Losing a state file generates a new seed and thus different traffic keys after reauthentication; packets from the previous key are no longer accepted. X25519 forward secrecy and automatic key rotation remain future work.
+
+Recovery verification: keep a ping running, stop one endpoint with Ctrl+C, verify the survivor shows reconnecting, and restart the stopped endpoint with the same state path and PSK. Ping should recover after reauthentication without restarting the survivor. Repeat in both directions. The automated tests exercise local UDP and persistence without privileged TUN; repeat this full cloud check before claiming deployment recovery results.
