@@ -12,7 +12,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 from internet import InternetRouting
-from file_transfer import digest, receive
+from file_transfer import digest, receive, download
 
 
 class RoutingTests(unittest.TestCase):
@@ -80,7 +80,7 @@ class RoutingTests(unittest.TestCase):
             route.enable()
             route.close()
         masquerade = next(c for c in calls if '-I' in c and 'MASQUERADE' in c)
-        self.assertIn('10.8.0.2/32', masquerade)
+        self.assertIn('10.8.0.0/24', masquerade)
         self.assertIn('ens4', masquerade)
         self.assertEqual(len([c for c in calls if '-D' in c]), 4)
         self.assertEqual(calls[-1], ('sysctl', '-w', 'net.ipv4.ip_forward=0'))
@@ -106,6 +106,9 @@ class TransferTests(unittest.TestCase):
                         time.sleep(0.02)
                 receive(base, dest)
                 self.assertEqual(digest(source), digest(dest))
+                public_copy = Path(folder) / 'public-download.bin'
+                download(base + '/file', public_copy, digest(source))
+                self.assertEqual(digest(source), digest(public_copy))
                 with self.assertRaises(ValueError):
                     receive(base, dest)
             finally:

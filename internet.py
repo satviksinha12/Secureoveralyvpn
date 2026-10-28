@@ -11,6 +11,7 @@ class InternetRouting:
         self.mode, self.peer_ip, self.tun = mode, peer_ip, tun
         self.undo = []
         self.active = False
+        self.client_ip = '10.8.0.2'
 
     @staticmethod
     def run(*args):
@@ -54,8 +55,14 @@ class InternetRouting:
             route_args += ['dev', dev]
             self.change(route_args, ['ip', '-4', 'route', 'del', self.peer_ip + '/32', 'dev', dev])
         for network in ('0.0.0.0/1', '128.0.0.0/1'):
-            self.change(['ip', '-4', 'route', 'add', network, 'dev', self.tun, 'src', '10.8.0.2'],
+            self.change(['ip', '-4', 'route', 'add', network, 'dev', self.tun, 'src', self.client_ip],
                         ['ip', '-4', 'route', 'del', network, 'dev', self.tun])
+
+    def set_address(self, address):
+        if self.active and address != self.client_ip:
+            for network in ('0.0.0.0/1', '128.0.0.0/1'):
+                self.run('ip', '-4', 'route', 'replace', network, 'dev', self.tun, 'src', address)
+        self.client_ip = address
 
     def server(self):
         route = json.loads(self.run('ip', '-j', '-4', 'route', 'get', '1.1.1.1'))[0]
@@ -69,11 +76,11 @@ class InternetRouting:
             self.change(['sysctl', '-w', 'net.ipv4.ip_forward=1'],
                         ['sysctl', '-w', 'net.ipv4.ip_forward=' + previous])
         rules = [
-            ('filter', 'FORWARD', ['-i', self.tun, '-o', dev, '-s', '10.8.0.2/32',
+            ('filter', 'FORWARD', ['-i', self.tun, '-o', dev, '-s', '10.8.0.0/24',
                                    '-m', 'conntrack', '--ctstate', 'NEW,ESTABLISHED,RELATED', '-j', 'ACCEPT']),
-            ('filter', 'FORWARD', ['-i', dev, '-o', self.tun, '-d', '10.8.0.2/32',
+            ('filter', 'FORWARD', ['-i', dev, '-o', self.tun, '-d', '10.8.0.0/24',
                                    '-m', 'conntrack', '--ctstate', 'ESTABLISHED,RELATED', '-j', 'ACCEPT']),
-            ('nat', 'POSTROUTING', ['-s', '10.8.0.2/32', '-o', dev, '-j', 'MASQUERADE']),
+            ('nat', 'POSTROUTING', ['-s', '10.8.0.0/24', '-o', dev, '-j', 'MASQUERADE']),
             ('mangle', 'FORWARD', ['-o', self.tun, '-p', 'tcp', '--tcp-flags', 'SYN,RST', 'SYN',
                                    '-j', 'TCPMSS', '--clamp-mss-to-pmtu']),
         ]

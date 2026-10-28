@@ -1,5 +1,7 @@
 # Team setup and demonstration guide
 
+**For current simultaneous-device deployment use [MULTI_DEVICE.md](MULTI_DEVICE.md) first.** It replaces the original one-client setup below: server peer-IP filtering is optional, client ports and tunnel IPs are automatic, and v3 requires new state paths once.
+
 Start here if you are setting up or presenting **Secure Overlay VPN with Live Monitoring Dashboard**. The detailed implementation description is in [README.md](README.md). For the new optional IPv4 internet gateway and file-transfer presentation, follow [INTERNET_DEMO.md](INTERNET_DEMO.md).
 
 ## 1. Choose your role before running anything
@@ -10,7 +12,7 @@ Start here if you are setting up or presenting **Secure Overlay VPN with Live Mo
 | Client operator | Linux laptop on home Wi-Fi | Start client, generate ping and iperf traffic, display local dashboard |
 | Evidence/presentation operator | Separate terminals/browser | Record results, save screenshots, explain architecture and test outcomes |
 
-The server supports **one client per session**. Teammates must take turns, rather than connect multiple laptops simultaneously. When changing client laptops, update the server's expected public IPv4 and cloud firewall source range, then restart both endpoints.
+The server supports multiple simultaneous devices with separate state files. Follow MULTI_DEVICE.md to omit the server peer-IP filter and allow the shared UDP listener from any IPv4 source. Each client receives its own virtual address.
 
 Use three terminals: server VPN, laptop VPN, and tests. Open extra SSH windows as needed. Leave VPN terminals running while issuing test commands elsewhere.
 
@@ -137,7 +139,7 @@ In the laptop's project directory, in the shell where you entered its PSK, repla
 sudo env VPN_PSK="$VPN_PSK" .venv/bin/python vpn.py --mode client --peer-ip VM_EXTERNAL_IP --handshake-timeout 600 --verbose
 ```
 
-Both endpoints must display **Tunnel ready**. Then leave these two processes alone. Only one server and one client should be running.
+The server displays **Multi-client server ready**; each client displays **Tunnel ready** after receiving its address. Leave forwarding processes running; run only one client process per device.
 
 ## 9. Verify connectivity and show the dashboard
 
@@ -260,7 +262,7 @@ Use Ctrl+C in each original VPN terminal. Ctrl+C/SIGTERM cancels both an active 
 
 ### Reconnection and retained traffic keys
 
-Update **both endpoints** before using this version; protocol v2 is incompatible with the original demo version. Automatic reconnect and encrypted keepalives are enabled without additional flags. A process restart still requires relaunching its command, but the other endpoint can remain running and retry.
+Update **both endpoints** before using this version; protocol v3 is incompatible with earlier versions. Automatic reconnect and encrypted keepalives are enabled without additional flags. A process restart still requires relaunching its command, but the other endpoint can remain running and retry.
 
 For keys to survive process restarts, create a private state directory on each machine:
 
@@ -270,7 +272,7 @@ sudo install -d -m 700 /var/lib/pyvpn
 
 Add `--state-file /var/lib/pyvpn/server.sqlite` to the cloud command and `--state-file /var/lib/pyvpn/client.sqlite` to the laptop command. Keep using those same local files and the same PSK. Enter the PSK again when starting a new shell; it is not saved by this option.
 
-State saves the derivation seed, reserved send-counter ranges, and receive replay window. Never share, copy, or restore an older state database: rolling it back can break nonce/replay safety. After restoring a VM snapshot, rotate the PSK and use new state paths on both peers. State filenames are ignored by Git. See [README.md](README.md#automatic-reconnect-and-restart-safe-sessions-protocol-v2) for details.
+State saves the derivation seed, reserved send-counter ranges, and receive replay window. Never share, copy, or restore an older state database: rolling it back can break nonce/replay safety. After restoring a VM snapshot, rotate the PSK and use new state paths on both peers. State filenames are ignored by Git. See [README.md](README.md#automatic-reconnect-and-restart-safe-sessions-protocol-v3) for details.
 
 To demonstrate recovery, keep ping running, stop one VPN process with Ctrl+C, then restart it with the same command, PSK, and state path. The survivor should retry and reconnect. Default keepalives run every 5 seconds, peer timeout is 20 seconds, and retry delay is 2 seconds. This is not guaranteed to recover instantly, and packets may be lost during the outage. Watch `connection_state` and `reconnects` on the dashboard. Repeat the test with the opposite endpoint.
 

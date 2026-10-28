@@ -1,10 +1,12 @@
-# Python point-to-point VPN
+# Secure overlay VPN
+
+**Current multi-device setup: [MULTI_DEVICE.md](MULTI_DEVICE.md).** Protocol v3 accepts multiple PSK-authenticated clients from any IPv4 source when the server omits `--peer-ip`; clients choose local ports automatically. Update all endpoints and use new v3 state paths once.
 
 **Internet access and file transfer:** see [INTERNET_DEMO.md](INTERNET_DEMO.md). Enable `--internet` on both endpoints for an IPv4 gateway; use `file_transfer.py` for checksum-verified transfers.
 
 **Teammates: start with [TEAM_SETUP.md](TEAM_SETUP.md)** for repository access, cloud/laptop setup, demo steps, and troubleshooting.
 
-A Linux TUN tunnel using UDP and AES-256-GCM. Python 3.10+ and `cryptography` are the only Python dependencies. Run both endpoints with root privileges. This is a one-peer demonstration implementation.
+A multi-client Linux IPv4 TUN tunnel using UDP and AES-256-GCM. Python 3.10+ and `cryptography` are the only Python dependencies. Run endpoints with root privileges. Each authenticated client receives a separate tunnel IP and traffic keys.
 
 ```text
 client_ns                                           server_ns
@@ -50,7 +52,7 @@ sudo ip netns exec server_ns curl http://127.0.0.1:5000/stats
 sudo bash teardown_ns.sh
 ```
 
-Use `openssl rand -hex 32` or Python's `secrets.token_hex(32)` to generate the PSK. Prefer `VPN_PSK` to the `--psk` option so it does not appear in command-line listings. Root can still inspect process environments. Both peers bind the chosen UDP port. The client contacts the configured server IP/port; the server learns the client source port from a PSK-authenticated hello from the configured client IP, then filters traffic to that endpoint. Start both endpoints; failed handshake rounds automatically retry. The default 60-second handshake timeout applies to each round.
+Use `openssl rand -hex 32` or Python's `secrets.token_hex(32)` to generate the PSK. Prefer `VPN_PSK` to the `--psk` option so it does not appear in command-line listings. Root can still inspect process environments. The server binds the chosen UDP port; clients bind automatically selected local UDP ports by default. The client contacts the configured server IP/port; the server authenticates and tracks each learned UDP endpoint independently. A server --peer-ip is now an optional source filter, not required. Start both endpoints; failed handshake rounds automatically retry. The default 60-second handshake timeout applies to each round.
 
 TUN is created using `/dev/net/tun`, `fcntl.ioctl`, and `IFF_TUN | IFF_NO_PI`. Each endpoint configures its /24 address and MTU 1400 with `ip`. The resulting connected route sends traffic for 10.8.0.0/24 into TUN. The main loop uses `select()` on TUN and UDP. Closing the file descriptor removes the nonpersistent TUN device.
 
@@ -69,9 +71,9 @@ nonce = four zero bytes || sequence (8 BE)
 
 Sequence numbers start at zero independently in each direction. Overflow stops transmission. Each direction uses a different 256-bit key. Packet overhead is 36 bytes plus the outer UDP/IP headers. Counters measure inner IP bytes successfully sent or written to TUN, rather than outer wire bytes.
 
-HKDF-SHA256 derives a master authentication key from the PSK using a protocol-specific salt and label. Protocol v2 startup uses `PYVPN2 || role(1) || seed(32) || challenge(32) || HMAC-SHA256(32)`. Challenges are fresh for every attempt. A `ACK || role(1) || HMAC-SHA256(32)` confirmation binds both seeds and fresh challenges in server/client order. HKDF derives separate directional traffic keys from the PSK-derived master and the ordered seeds. Changing either seed creates new traffic keys.
+HKDF-SHA256 derives a master authentication key from the PSK using a protocol-specific salt and label. Protocol v3 startup uses `PYVPN3 || role(1) || seed(32) || challenge(32) || HMAC-SHA256(32)`. Challenges are fresh for every attempt. A `ACK || role(1) || HMAC-SHA256(32)` confirmation binds both seeds and fresh challenges in server/client order. HKDF derives separate directional traffic keys from the PSK-derived master and the ordered seeds. Changing either seed creates new traffic keys.
 
-By default seeds are random per handshake, so reconnects use fresh traffic keys. With `--state-file`, each peer retains its seed and its per-key nonce/replay state; using the same PSK and both saved seeds regenerates the same directional traffic keys after a restart. Fresh challenges still authenticate every reconnect. This is PSK authentication, **not X25519**, and does not provide forward secrecy. Weak PSKs permit offline guessing. Both endpoints must run protocol v2; earlier versions are incompatible.
+By default seeds are random per handshake, so reconnects use fresh traffic keys. With `--state-file`, each peer retains its seed and its per-key nonce/replay state; using the same PSK and both saved seeds regenerates the same directional traffic keys after a restart. Fresh challenges still authenticate every reconnect. This is PSK authentication, **not X25519**, and does not provide forward secrecy. Weak PSKs permit offline guessing. Both endpoints must run protocol v3; earlier versions are incompatible.
 
 Handshake messages retry every 300 ms. A completed peer answers repeated matching hellos so lost final confirmations can recover. After an idle-peer timeout, a new handshake learns a changed NAT source port. Arbitrary packets cannot extend the authenticated peer liveness timer. See the persistence section below for restart-safety requirements.
 
@@ -103,7 +105,7 @@ sudo env PATH="$PWD/.venv/bin:$PATH" bash tests/demo.sh
 | Direct veth TCP Mbit/s | Not measured: iperf3 missing |
 | Tunnel TCP Mbit/s | Not measured: iperf3 missing |
 
-Twenty-three automated tests pass. The suite covers crypto, authenticated endpoint discovery, wrong-PSK rejection, dashboard serving, durable nonce reservations, persistent replay rejection, fresh reconnect challenges, encrypted keepalives, cancellation, and retry behavior. The live UDP test was run outside the restricted socket sandbox. The full root demo was attempted but `sudo -n` reported that a password is required. This environment also lacks tcpdump. No network benchmark values or successful TUN demo results are claimed. Run the complete demo on Ubuntu to produce measured results in `results/benchmark.md`.
+Twenty-seven automated tests pass. The suite covers crypto, authenticated endpoint discovery, wrong-PSK rejection, dashboard serving, durable nonce reservations, persistent replay rejection, fresh reconnect challenges, encrypted keepalives, cancellation, and retry behavior. The live UDP test was run outside the restricted socket sandbox. The full root demo was attempted but `sudo -n` reported that a password is required. This environment also lacks tcpdump. No network benchmark values or successful TUN demo results are claimed. Run the complete demo on Ubuntu to produce measured results in `results/benchmark.md`.
 
 `tests/attack.py` runs in server_ns, captures an actual incoming tunnel datagram from `veth_s`, resends its IP/UDP bytes using a raw socket, then flips a ciphertext/tag byte and resends. IPv4 UDP checksum is zeroed to ensure GCM, rather than UDP checksum validation, rejects the tamper. It asserts that both relevant drop counters increase. Run it before generating ping traffic; `tests/demo.sh` handles this order.
 
@@ -119,7 +121,7 @@ The plaintext-only development milestone could not be validated without TUN/root
 
 ## Future work
 
-- Multi-client support.
+- Per-device credentials and revocation.
 - IPv6 internet routing and resolver integration.
 - Packet loss analytics.
 - Certificate-based authentication.
@@ -132,7 +134,7 @@ Use an Ubuntu Compute Engine VM for the server and a separate Linux machine for 
 
 1. Assign the VM an external IPv4 address, preferably a reserved static address.
 2. Add a VPC ingress rule allowing **UDP 5555**, targeted to this VM, with the client's public IPv4 `/32` as the source. If a guest firewall such as UFW is enabled, allow that same traffic there too.
-3. Install Python, venv, iproute2, and cryptography on both machines using the installation commands above. Copy `vpn.py`, `internet.py`, and `requirements.txt` to each. Also copy `file_transfer.py` for the file demo. Run `sudo modprobe tun` and check `test -c /dev/net/tun`.
+3. Install Python, venv, iproute2, and cryptography on both machines using the installation commands above. Copy `vpn.py`, `multi_server.py`, `internet.py`, and `requirements.txt` to each. Also copy `file_transfer.py` for the file demo. Run `sudo modprobe tun` and check `test -c /dev/net/tun`.
 4. Supply the same generated PSK in `VPN_PSK` on both machines. Start these commands within 60 seconds of one another (or increase `--handshake-timeout`).
 
 On the VM, from the project directory:
@@ -202,11 +204,11 @@ iperf3 -c 10.8.0.1 -t 10 -J > results/cloud-tunnel.json
 This needs no public iperf firewall opening. A direct cloud comparison requires a separate iperf listener on the VM internal address and a temporary TCP 5201 VPC/guest firewall allowance restricted to the home public IP. That compares the same internet path with/without tunneling; it is distinct from the direct-veth namespace benchmark. Remove the temporary allowance afterward.
 
 
-## Automatic reconnect and restart-safe sessions (protocol v2)
+## Automatic reconnect and restart-safe sessions (protocol v3)
 
 Both peers automatically retry startup and recover after peer timeouts or transient UDP errors. Defaults are `--keepalive 5`, `--peer-timeout 20`, and `--reconnect-delay 2` (seconds). `--handshake-timeout` bounds each attempt, not total process lifetime. Recovery can take a peer timeout plus a handshake round; queued TUN packets may be lost during outages. TUN and the dashboard stay available while reconnecting. `connection_state` reports connecting/connected/reconnecting, and `reconnects` counts failed rounds or established connection failures. Ctrl+C/SIGTERM now cancels a waiting handshake promptly. Stopping the process still requires starting it again manually or through a process supervisor.
 
-To retain traffic keys through restarts, enable persistence on **both machines**. Once on each machine:
+To retain traffic keys through restarts, enable persistence on **all machines**. Once on each machine:
 
 ```bash
 sudo install -d -m 700 /var/lib/pyvpn
@@ -224,10 +226,15 @@ On the client:
 sudo env VPN_PSK="$VPN_PSK" .venv/bin/python vpn.py --mode client --peer-ip VM_EXTERNAL_IP --state-file /var/lib/pyvpn/client.sqlite --verbose
 ```
 
-The PSK must still be supplied after a process restart; it is not stored in the database. The database retains the local derivation seed and per-key sequence/replay state, allowing the same traffic keys to be regenerated. It must be a mode-0600 regular file in a mode-0700 directory owned by the process user (root for sudo). Concurrent use of a state file is refused. It is bound to the configured mode, peer IP, and PSK; use a new file when changing these settings. Never share a state file between endpoints or running instances. State errors are fatal: the program will not silently reset counters under retained keys.
+The PSK must still be supplied after a process restart; it is not stored in the database. The database retains the local derivation seed and per-key sequence/replay state, allowing the same traffic keys to be regenerated. It must be a mode-0600 regular file in a mode-0700 directory owned by the process user (root for sudo). Concurrent use of a state file is refused. Client state is bound to the protocol, server IP, and PSK; server state is bound to the protocol and PSK. Use a new file when changing these settings. Never share a state file between endpoints or running instances. State errors are fatal: the program will not silently reset counters under retained keys.
 
 Before sending, SQLite commits a reservation for the next 4096 sequence numbers with synchronous=FULL. Restart skips unused reserved numbers, so even an abrupt process exit cannot reuse already-issued nonces, provided storage honors durable writes. Incoming replay state is committed **before** delivering each authenticated packet. This intentionally adds a disk transaction per received datagram and can reduce throughput. The previous 13.2 Mbit/s result predates persistence and is not a benchmark of this version. Process counters reset on restart; cryptographic counters do not.
 
 **Never restore or roll back an old session-state backup, clone a VM with active state, or copy the database to another sender.** A rollback can reuse nonces or admit old packets. If restoring a machine snapshot, stop both peers, rotate the PSK, and use new state files on both. A local database cannot detect rollback of itself. Losing a state file generates a new seed and thus different traffic keys after reauthentication; packets from the previous key are no longer accepted. X25519 forward secrecy and automatic key rotation remain future work.
 
 Recovery verification: keep a ping running, stop one endpoint with Ctrl+C, verify the survivor shows reconnecting, and restart the stopped endpoint with the same state path and PSK. Ping should recover after reauthentication without restarting the survivor. Repeat in both directions. The automated tests exercise local UDP and persistence without privileged TUN; repeat this full cloud check before claiming deployment recovery results.
+
+
+## Multi-client address configuration
+
+The v3 server sends each authenticated client an AES-GCM-protected `\x00CFG || assigned IPv4(4)` control payload and retries until it receives `\x00CFA || assigned IPv4(4)`. These records use the same durable counter and replay rules as data. Clients configure the leased address before forwarding application traffic. The server routes returning TUN IPv4 packets to the matching client and rejects client source addresses that differ from the lease. Empty encrypted records remain keepalives. See [MULTI_DEVICE.md](MULTI_DEVICE.md) for current deployment commands.

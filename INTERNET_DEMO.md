@@ -1,25 +1,28 @@
 # Public IPv4 internet and file-transfer demonstration
 
+**Current version:** follow [MULTI_DEVICE.md](MULTI_DEVICE.md) for the v3 multi-device launch commands and state paths. The transfer steps below still apply; clients have different assigned IPs.
+
 This adds two capabilities: optional client IPv4 internet routing through the cloud server, and a file-transfer demo with SHA-256 verification. File transfer between 10.8.0.1 and 10.8.0.2 also works without internet routing.
 
 ## 1. Update your manually uploaded cloud installation
 
-Stop both VPN processes with Ctrl+C. In SSH-in-browser upload these **three** laptop files:
+Stop both VPN processes with Ctrl+C. In SSH-in-browser upload these **four** laptop files:
 
 - vpn.py
 - internet.py
+- multi_server.py
 - file_transfer.py
 
 They must be in the same project folder. On the VM, assuming the uploads landed in your home directory:
 
 ```bash
-mv ~/vpn.py ~/internet.py ~/file_transfer.py ~/vpn-project/
+mv ~/vpn.py ~/internet.py ~/multi_server.py ~/file_transfer.py ~/vpn-project/
 cd ~/vpn-project
 sudo apt-get update
 sudo apt-get install -y iptables curl
 ```
 
-No additional Python package is needed. The laptop already has the updated files if it is the working checkout; otherwise update its checkout or copy all three files there too.
+No additional Python package is needed. The laptop already has the updated files if it is the working checkout; otherwise update its checkout or copy all four files there too.
 
 ## 2. Start both VPN endpoints with --internet
 
@@ -53,7 +56,7 @@ curl --noproxy '*' -4 --max-time 30 https://api.ipify.org
 echo
 ```
 
-Replace VM_EXTERNAL_IP in the second command. Expect 1.1.1.1 to use tun0 with source 10.8.0.2, but the VM's external IP to use the physical Wi-Fi interface. The curl result should match the VM's external IP, rather than your home public IP. Run that same curl command on the VM to compare.
+Replace VM_EXTERNAL_IP in the second command. Expect 1.1.1.1 to use tun0 with the assigned client source address, but the VM's external IP to use the physical Wi-Fi interface. The curl result should match the VM's external IP, rather than your home public IP. Run that same curl command on the VM to compare.
 
 On the VM:
 
@@ -63,7 +66,7 @@ sudo iptables -t nat -vnL POSTROUTING
 sudo iptables -vnL FORWARD
 ```
 
-The program enables Linux forwarding and installs MASQUERADE for source 10.8.0.2/32 on the physical egress interface. It permits related return traffic and clamps TCP MSS toward TUN. Source NAT replaces the tunnel source with the VM NIC address before packets enter Google Cloud's network. Therefore this specific NAT design does not emit arbitrary 10.8.x.x sources onto the VPC. A deployment without source NAT or one using VPC next-hop routes has different requirements; consult [Google Cloud IP forwarding guidance](https://docs.cloud.google.com/vpc/docs/using-routes#canipforward).
+The program enables Linux forwarding and installs MASQUERADE for source 10.8.0.0/24 on the physical egress interface. It permits related return traffic and clamps TCP MSS toward TUN. Source NAT replaces the tunnel source with the VM NIC address before packets enter Google Cloud's network. Therefore this specific NAT design does not emit arbitrary 10.8.x.x sources onto the VPC. A deployment without source NAT or one using VPC next-hop routes has different requirements; consult [Google Cloud IP forwarding guidance](https://docs.cloud.google.com/vpc/docs/using-routes#canipforward).
 
 ## 4. Transfer a file through the encrypted VPN
 

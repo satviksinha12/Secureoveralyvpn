@@ -6,12 +6,48 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
+from http.client import HTTPConnection, HTTPSConnection
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.request import build_opener, ProxyHandler
+from urllib.request import build_opener, ProxyHandler, HTTPHandler, HTTPSHandler
 
-# Tunnel file transfers must connect directly, even when shell proxy variables exist.
-urlopen = build_opener(ProxyHandler({})).open
+def connect_ipv4(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+    last_error = None
+    for entry in socket.getaddrinfo(address[0], address[1], socket.AF_INET, socket.SOCK_STREAM):
+        try:
+            return socket.create_connection((entry[4][0], entry[4][1]), timeout, source_address)
+        except OSError as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise OSError('No IPv4 address for download host')
+
+
+class IPv4HTTPConnection(HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = connect_ipv4
+
+
+class IPv4HTTPSConnection(HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = connect_ipv4
+
+
+class IPv4HTTPHandler(HTTPHandler):
+    def http_open(self, request):
+        return self.do_open(IPv4HTTPConnection, request)
+
+
+class IPv4HTTPSHandler(HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(IPv4HTTPSConnection, request, context=self._context)
+
+
+# Connect directly over IPv4, preserving normal HTTPS certificate verification.
+urlopen = build_opener(ProxyHandler({}), IPv4HTTPHandler(), IPv4HTTPSHandler()).open
 
 
 def digest(path):
@@ -51,17 +87,21 @@ def serve(path, bind, port):
         http.serve_forever()
 
 
-def receive(base_url, output):
+def download(url, output, expected_hash=None, expected_size=None):
     output = Path(output)
     if output.exists():
         raise ValueError('Output already exists; choose another filename')
-    with urlopen(base_url.rstrip('/') + '/manifest', timeout=30) as response:
-        info = json.load(response)
+    if not url.startswith(('https://', 'http://')):
+        raise ValueError('Use an HTTP or HTTPS URL')
+    if expected_hash is not None:
+        expected_hash = expected_hash.lower()
+        if len(expected_hash) != 64 or any(c not in '0123456789abcdef' for c in expected_hash):
+            raise ValueError('Expected SHA-256 must contain 64 hexadecimal characters')
     fd, temporary = tempfile.mkstemp(prefix='.pyvpn-download-', dir=output.parent)
     try:
         actual = hashlib.sha256()
         size = 0
-        with os.fdopen(fd, 'wb') as dest, urlopen(base_url.rstrip('/') + '/file', timeout=60) as source:
+        with os.fdopen(fd, 'wb') as dest, urlopen(url, timeout=60) as source:
             while True:
                 block = source.read(1024 * 1024)
                 if not block:
@@ -69,13 +109,22 @@ def receive(base_url, output):
                 dest.write(block)
                 actual.update(block)
                 size += len(block)
-        if size != info['bytes'] or actual.hexdigest() != info['sha256']:
+        if ((expected_size is not None and size != expected_size)
+                or (expected_hash is not None and actual.hexdigest() != expected_hash)):
             raise ValueError('Download checksum or length mismatch')
-        # Hard link refuses to overwrite a destination created during the download.
         os.link(temporary, output)
-        print(f'PASS: received {size} bytes; SHA-256 {actual.hexdigest()}', flush=True)
+        status = 'PASS' if expected_hash is not None else 'Downloaded (no expected checksum supplied)'
+        print(f'{status}: received {size} bytes; SHA-256 {actual.hexdigest()}', flush=True)
     finally:
         os.unlink(temporary)
+
+
+def receive(base_url, output):
+    if Path(output).exists():
+        raise ValueError('Output already exists; choose another filename')
+    with urlopen(base_url.rstrip('/') + '/manifest', timeout=30) as response:
+        info = json.load(response)
+    download(base_url.rstrip('/') + '/file', output, info['sha256'], info['bytes'])
 
 
 def main():
@@ -88,11 +137,17 @@ def main():
     client = commands.add_parser('receive')
     client.add_argument('--url', default='http://10.8.0.1:8000')
     client.add_argument('--output', required=True)
+    public = commands.add_parser('download', help='Download an ordinary public HTTP(S) file using current VPN routes')
+    public.add_argument('--url', required=True)
+    public.add_argument('--output', required=True)
+    public.add_argument('--sha256', help='Optional expected publisher SHA-256')
     args = parser.parse_args()
     if args.command == 'serve':
         serve(args.file, args.bind, args.port)
-    else:
+    elif args.command == 'receive':
         receive(args.url, args.output)
+    else:
+        download(args.url, args.output, args.sha256)
 
 
 if __name__ == '__main__':

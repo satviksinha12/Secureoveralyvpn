@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Point-to-point Linux TUN VPN; one peer per process."""
+"""Multi-client Linux IPv4 TUN VPN with PSK authentication."""
 import argparse
 import errno
 import fcntl
@@ -28,7 +28,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 LOG = logging.getLogger('vpn')
-HELLO = b'PYVPN2'
+HELLO = b'PYVPN3'
 MTU = 1400
 
 
@@ -156,7 +156,7 @@ class TunnelCrypto:
 
 def handshake(sock, psk, mode, timeout, expected_peer_ip=None, store=None, stop=None):
     """Fresh authenticated challenges; optional stable seeds retain traffic keys."""
-    master = derive(psk.encode(), b'pyvpn-v2-psk', b'authentication')
+    master = derive(psk.encode(), b'pyvpn-v3-psk', b'authentication')
     role = b'S' if mode == 'server' else b'C'
     other = b'C' if role == b'S' else b'S'
     local = (store.seed if store else os.urandom(32)) + os.urandom(32)
@@ -224,11 +224,34 @@ TRANSIENT = {errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH,
 def connect_session(args, stop, store):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.bind(('0.0.0.0', args.port))
+        sock.bind(('0.0.0.0', args.port if args.mode == 'server' else getattr(args, 'local_port', 0)))
         if args.mode == 'client':
             sock.connect((args.peer_ip, args.port))
         crypto = handshake(sock, args.psk, args.mode, args.handshake_timeout,
                            args.peer_ip if args.mode == 'server' else None, store, stop)
+        if args.mode == 'client':
+            deadline = time.monotonic() + args.handshake_timeout
+            while time.monotonic() < deadline:
+                if stop.is_set():
+                    raise InterruptedError('Shutdown requested')
+                if not select.select([sock], [], [], 0.1)[0]:
+                    continue
+                wire = sock.recv(65535)
+                if wire == crypto.remote_hello:
+                    sock.send(crypto.confirm)
+                    continue
+                if len(wire) == 36 and wire.startswith(b'ACK'):
+                    continue
+                plain, reason = crypto.decrypt(wire)
+                if reason is None and len(plain) == 8 and plain[:4] == b'\x00CFG':
+                    address = ipaddress.IPv4Address(plain[4:])
+                    if address not in ipaddress.IPv4Network('10.8.0.0/24') or not 2 <= (int(address) & 255) <= 254:
+                        raise ValueError('Invalid server-assigned tunnel address')
+                    crypto.assigned_ip = str(address)
+                    sock.send(crypto.encrypt(b'\x00CFA' + plain[4:]))
+                    break
+            else:
+                raise TimeoutError('Server did not assign a tunnel address')
         return sock, crypto
     except BaseException:
         sock.close()
@@ -257,7 +280,6 @@ def forward(tun, sock, crypto, stats, lock, stop, args):
                 wire = sock.recv(65535)
                 # Finish a handshake if its final confirmation was lost.
                 if wire == crypto.remote_hello:
-                    sock.send(crypto.local_hello)
                     sock.send(crypto.confirm)
                     continue
                 if wire.startswith(HELLO) or (len(wire) == 36 and wire.startswith(b'ACK')):
@@ -271,6 +293,11 @@ def forward(tun, sock, crypto, stats, lock, stop, args):
                 last_rx = time.monotonic()
                 with lock:
                     stats['last_seen'] = time.time()
+                if len(plain) == 8 and plain[:4] == b'\x00CFG':
+                    if socket.inet_ntoa(plain[4:]) != crypto.assigned_ip:
+                        raise ValueError('Server changed address without a fresh handshake')
+                    sock.send(crypto.encrypt(b'\x00CFA' + plain[4:]))
+                    continue
                 if plain == b'':
                     continue  # Authenticated keepalive, not a TUN packet.
                 if plain[0] >> 4 not in (4, 6):
@@ -334,8 +361,9 @@ def dashboard(stats, lock, bind, port):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['server', 'client'], required=True)
-    parser.add_argument('--peer-ip', required=True)
-    parser.add_argument('--port', type=int, default=5555)
+    parser.add_argument('--peer-ip', help='Required server address on clients; optional source-IP filter on servers')
+    parser.add_argument('--port', type=int, default=5555, help='Server UDP port (default 5555)')
+    parser.add_argument('--local-port', type=int, default=0, help='Client UDP source port; 0 chooses automatically')
     parser.add_argument('--psk', default=os.environ.get('VPN_PSK'))
     parser.add_argument('--tun', default='tun0')
     parser.add_argument('--dashboard-bind', default='127.0.0.1')
@@ -355,7 +383,12 @@ def main():
     if (args.handshake_timeout <= 0 or args.reconnect_delay <= 0 or args.keepalive <= 0
             or args.peer_timeout <= args.keepalive):
         parser.error('Timeout/delay values must be positive; peer timeout must exceed keepalive')
-    ipaddress.IPv4Address(args.peer_ip)
+    if args.mode == 'client' and not args.peer_ip:
+        parser.error('--peer-ip SERVER_IPV4 is required for clients')
+    if args.peer_ip:
+        ipaddress.IPv4Address(args.peer_ip)
+    if not 0 <= args.local_port <= 65535:
+        parser.error('Local port must be between 0 and 65535')
     if not 0 < len(args.tun.encode()) < 16:
         parser.error('TUN name must be 1–15 bytes')
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -366,11 +399,15 @@ def main():
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
+    if args.mode == 'server':
+        from multi_server import run_server
+        run_server(args, stop, stats, lock)
+        return
     tun = http = store = None
     routing = InternetRouting(args.mode, args.peer_ip, args.tun) if args.internet else None
     try:
         if args.state_file:
-            identity = hashlib.sha256((args.mode + ':' + args.peer_ip + ':' + args.psk).encode()).hexdigest()
+            identity = hashlib.sha256(('client-v3:' + args.peer_ip + ':' + args.psk).encode()).hexdigest()
             store = SessionStore(args.state_file, identity)
         address = '10.8.0.1' if args.mode == 'server' else '10.8.0.2'
         tun = open_tun(args.tun, address)
@@ -384,7 +421,13 @@ def main():
             try:
                 LOG.info('Waiting for authenticated peer %s:%s', args.peer_ip, args.port)
                 sock, crypto = connect_session(args, stop, store)
+                assigned = getattr(crypto, 'assigned_ip', address)
+                if assigned != address:
+                    subprocess.run(['ip', 'addr', 'del', address + '/24', 'dev', args.tun], check=True)
+                    subprocess.run(['ip', 'addr', 'add', assigned + '/24', 'dev', args.tun], check=True)
+                    address = assigned
                 if routing and args.mode == 'client':
+                    routing.set_address(address)
                     routing.enable()
                 with lock:
                     stats['connection_state'] = 'connected'
