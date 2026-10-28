@@ -1,5 +1,7 @@
 # Python point-to-point VPN
 
+**Internet access and file transfer:** see [INTERNET_DEMO.md](INTERNET_DEMO.md). Enable `--internet` on both endpoints for an IPv4 gateway; use `file_transfer.py` for checksum-verified transfers.
+
 **Teammates: start with [TEAM_SETUP.md](TEAM_SETUP.md)** for repository access, cloud/laptop setup, demo steps, and troubleshooting.
 
 A Linux TUN tunnel using UDP and AES-256-GCM. Python 3.10+ and `cryptography` are the only Python dependencies. Run both endpoints with root privileges. This is a one-peer demonstration implementation.
@@ -101,7 +103,7 @@ sudo env PATH="$PWD/.venv/bin:$PATH" bash tests/demo.sh
 | Direct veth TCP Mbit/s | Not measured: iperf3 missing |
 | Tunnel TCP Mbit/s | Not measured: iperf3 missing |
 
-Seventeen automated tests pass. The suite covers crypto, authenticated endpoint discovery, wrong-PSK rejection, dashboard serving, durable nonce reservations, persistent replay rejection, fresh reconnect challenges, encrypted keepalives, cancellation, and retry behavior. The live UDP test was run outside the restricted socket sandbox. The full root demo was attempted but `sudo -n` reported that a password is required. This environment also lacks tcpdump. No network benchmark values or successful TUN demo results are claimed. Run the complete demo on Ubuntu to produce measured results in `results/benchmark.md`.
+Twenty-three automated tests pass. The suite covers crypto, authenticated endpoint discovery, wrong-PSK rejection, dashboard serving, durable nonce reservations, persistent replay rejection, fresh reconnect challenges, encrypted keepalives, cancellation, and retry behavior. The live UDP test was run outside the restricted socket sandbox. The full root demo was attempted but `sudo -n` reported that a password is required. This environment also lacks tcpdump. No network benchmark values or successful TUN demo results are claimed. Run the complete demo on Ubuntu to produce measured results in `results/benchmark.md`.
 
 `tests/attack.py` runs in server_ns, captures an actual incoming tunnel datagram from `veth_s`, resends its IP/UDP bytes using a raw socket, then flips a ciphertext/tag byte and resends. IPv4 UDP checksum is zeroed to ensure GCM, rather than UDP checksum validation, rejects the tamper. It asserts that both relevant drop counters increase. Run it before generating ping traffic; `tests/demo.sh` handles this order.
 
@@ -118,7 +120,7 @@ The plaintext-only development milestone could not be validated without TUN/root
 ## Future work
 
 - Multi-client support.
-- NAT/routing to the internet.
+- IPv6 internet routing and resolver integration.
 - Packet loss analytics.
 - Certificate-based authentication.
 - X25519 exchange authenticated with the PSK for forward secrecy.
@@ -130,7 +132,7 @@ Use an Ubuntu Compute Engine VM for the server and a separate Linux machine for 
 
 1. Assign the VM an external IPv4 address, preferably a reserved static address.
 2. Add a VPC ingress rule allowing **UDP 5555**, targeted to this VM, with the client's public IPv4 `/32` as the source. If a guest firewall such as UFW is enabled, allow that same traffic there too.
-3. Install Python, venv, iproute2, and cryptography on both machines using the installation commands above. Copy `vpn.py` and `requirements.txt` to each. Run `sudo modprobe tun` and check `test -c /dev/net/tun`.
+3. Install Python, venv, iproute2, and cryptography on both machines using the installation commands above. Copy `vpn.py`, `internet.py`, and `requirements.txt` to each. Also copy `file_transfer.py` for the file demo. Run `sudo modprobe tun` and check `test -c /dev/net/tun`.
 4. Supply the same generated PSK in `VPN_PSK` on both machines. Start these commands within 60 seconds of one another (or increase `--handshake-timeout`).
 
 On the VM, from the project directory:
@@ -159,7 +161,7 @@ ssh -N -L 15000:127.0.0.1:5000 USER@VM_EXTERNAL_IPV4
 # Open http://127.0.0.1:15000 locally.
 ```
 
-Use your configured SSH user/key or an equivalent `gcloud compute ssh` tunnel. No Google Cloud IP forwarding or internet NAT configuration is needed for pinging the VPN endpoints themselves. Internet browsing through the tunnel remains outside this project's scope. Cloud deployment has not been tested from this workspace.
+Use your configured SSH user/key or an equivalent `gcloud compute ssh` tunnel. No Google Cloud IP forwarding or internet NAT configuration is needed for pinging the VPN endpoints themselves. Optional IPv4 internet routing is now available with `--internet` on both endpoints; see INTERNET_DEMO.md. Cloud deployment has not been tested from this workspace.
 
 Google Cloud references: [static external IPs](https://docs.cloud.google.com/vpc/docs/reserve-static-external-ip-address) and [VPC firewall rules](https://docs.cloud.google.com/firewall/docs/using-firewalls).
 

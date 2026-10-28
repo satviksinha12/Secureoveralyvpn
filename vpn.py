@@ -20,6 +20,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from internet import InternetRouting
+
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -343,6 +345,7 @@ def main():
     parser.add_argument('--reconnect-delay', type=float, default=2)
     parser.add_argument('--keepalive', type=float, default=5)
     parser.add_argument('--peer-timeout', type=float, default=20)
+    parser.add_argument('--internet', action='store_true', help='Enable IPv4 internet gateway (server) or split-default routes (client)')
     parser.add_argument('--verbose', action='store_true')
     args = parser.parse_args()
     if not args.psk or len(args.psk.encode()) < 16:
@@ -364,6 +367,7 @@ def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
     tun = http = store = None
+    routing = InternetRouting(args.mode, args.peer_ip, args.tun) if args.internet else None
     try:
         if args.state_file:
             identity = hashlib.sha256((args.mode + ':' + args.peer_ip + ':' + args.psk).encode()).hexdigest()
@@ -373,13 +377,18 @@ def main():
         with lock:
             stats.update(connection_state='connecting', reconnects=0)
         http = dashboard(stats, lock, args.dashboard_bind, args.dashboard_port)
+        if routing and args.mode == 'server':
+            routing.enable()
         while not stop.is_set():
             sock = None
             try:
                 LOG.info('Waiting for authenticated peer %s:%s', args.peer_ip, args.port)
                 sock, crypto = connect_session(args, stop, store)
+                if routing and args.mode == 'client':
+                    routing.enable()
                 with lock:
                     stats['connection_state'] = 'connected'
+                    stats['internet_ipv4'] = bool(routing)
                 LOG.info('Tunnel ready: %s %s; dashboard %s:%s', args.tun, address,
                          args.dashboard_bind, args.dashboard_port)
                 forward(tun, sock, crypto, stats, lock, stop, args)
@@ -398,6 +407,8 @@ def main():
                 if sock:
                     sock.close()
     finally:
+        if routing:
+            routing.close()
         if http:
             http.shutdown()
             http.server_close()

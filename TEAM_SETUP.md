@@ -1,6 +1,6 @@
 # Team setup and demonstration guide
 
-Start here if you are setting up or presenting **Secure Overlay VPN with Live Monitoring Dashboard**. The detailed implementation description is in [README.md](README.md).
+Start here if you are setting up or presenting **Secure Overlay VPN with Live Monitoring Dashboard**. The detailed implementation description is in [README.md](README.md). For the new optional IPv4 internet gateway and file-transfer presentation, follow [INTERNET_DEMO.md](INTERNET_DEMO.md).
 
 ## 1. Choose your role before running anything
 
@@ -55,7 +55,7 @@ ls -l /dev/net/tun
 
 If `modprobe` fails but the TUN device exists, support may already be built in. If the device is absent, fix host TUN support before continuing. Do not create a Python virtual environment as root.
 
-On the VM, either clone with your own authorized GitHub credentials or upload the files through SSH-in-browser. Keep vpn.py, requirements.txt, and tests/ together in the project directory. An upload of vpn.py alone is insufficient for the security tests.
+On the VM, either clone with your own authorized GitHub credentials or upload the files through SSH-in-browser. Keep vpn.py, internet.py, file_transfer.py, requirements.txt, and tests/ together in the project directory. An upload of vpn.py alone is insufficient for the security tests.
 
 ## 4. Record the correct addresses
 
@@ -283,6 +283,6 @@ To demonstrate recovery, keep ping running, stop one VPN process with Ctrl+C, th
 - Why the replay window changes only after authentication succeeds.
 - How NAT port discovery permits a home Wi-Fi client to initiate the connection.
 - What each dashboard counter means, and how replay/tamper tests change it.
-- Why cloud measurements vary and why this is an endpoint overlay rather than an internet-browsing VPN.
+- Why cloud measurements vary and how the optional IPv4 NAT gateway extends the basic endpoint overlay.
 
 For presentation preparation, split report/test-results writing, architecture slides, and demo rehearsal among the team. Each person should reproduce one check and explain its outcome rather than only reading screenshots.
