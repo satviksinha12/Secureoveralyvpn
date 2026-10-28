@@ -1,5 +1,59 @@
 # Secure overlay VPN
 
+**Building the client UI? Start with [UI_CLIENT_GUIDE.md](UI_CLIENT_GUIDE.md).** It defines the backend commands, stats fields, privilege handling, and public-IP demonstration.
+
+## Current commands: multi-device internet VPN
+
+Upload/update `vpn.py`, `multi_server.py`, `internet.py`, and `file_transfer.py` together. This is protocol v3; older clients are incompatible. Create new v3 state paths once, then keep them for future restarts. Each device creates its own state file; never copy a client's state file to another device.
+
+From the project directory on each endpoint, in **Bash**, enter the same PSK privately:
+
+```bash
+read -rsp "Shared PSK: " VPN_PSK
+```
+
+Prepare state storage on each machine:
+
+```bash
+sudo install -d -m 700 /var/lib/pyvpn
+```
+
+**Cloud server:** no home IP or client port settings required:
+
+```bash
+sudo env VPN_PSK="$VPN_PSK" .venv/bin/python vpn.py --mode server --state-file /var/lib/pyvpn/server-multi.sqlite --internet --verbose
+```
+
+Allow VPC ingress **UDP 5555 from 0.0.0.0/0** once. The PSK still authenticates clients. Install `iptables` on the VM for --internet. The server accepts multiple devices and assigns their tunnel IPs automatically.
+
+**Each Linux client:** replace VM_EXTERNAL_IP with the VM's current numeric external IPv4 address:
+
+```bash
+sudo env VPN_PSK="$VPN_PSK" .venv/bin/python vpn.py --mode client --peer-ip VM_EXTERNAL_IP --state-file /var/lib/pyvpn/client-multi.sqlite --internet --verbose
+```
+
+No --port or --local-port arguments are needed with the defaults. Remove --internet from the client command for endpoint-only traffic; the server can keep gateway mode enabled for other clients.
+
+**Verify from another client terminal:**
+
+```bash
+ping -c 5 -W 2 10.8.0.1
+curl --noproxy '*' -4 --max-time 30 https://api.ipify.org
+echo
+curl --max-time 3 http://127.0.0.1:5000/stats
+```
+
+With --internet active, the public IPv4 should match the cloud VM's external IPv4. A browser IP-location page generally reports a location associated with that address, not a guaranteed physical location. This feature is IPv4 exit-node routing; IPv6, local DNS, and more-specific local routes can bypass it. Do not label it complete leak protection.
+
+**Download a public file through the active IPv4 VPN routes:**
+
+```bash
+mkdir -p results
+.venv/bin/python file_transfer.py download --url https://www.rfc-editor.org/rfc/rfc791.txt --output results/rfc791.txt
+```
+
+Use a new output filename on subsequent runs. Add --sha256 with a publisher's expected 64-digit hash when available to verify downloaded contents.
+
 **Current multi-device setup: [MULTI_DEVICE.md](MULTI_DEVICE.md).** Protocol v3 accepts multiple PSK-authenticated clients from any IPv4 source when the server omits `--peer-ip`; clients choose local ports automatically. Update all endpoints and use new v3 state paths once.
 
 **Internet access and file transfer:** see [INTERNET_DEMO.md](INTERNET_DEMO.md). Enable `--internet` on both endpoints for an IPv4 gateway; use `file_transfer.py` for checksum-verified transfers.
