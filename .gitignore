@@ -35,3 +35,6 @@ results/*
 *.sqlite-*
 *.db
 *.db-*
+
+# Packaged standalone-client artifacts
+dist/

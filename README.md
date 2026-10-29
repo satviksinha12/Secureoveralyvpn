@@ -1,5 +1,7 @@
 # Secure overlay VPN
 
+**Separate client application:** [standalone_client/README.md](standalone_client/README.md). It runs independently of the original UI: Linux VPN client plus a Windows interface preview. Package it with `python3 scripts/package_client.py`.
+
 **Building the client UI? Start with [UI_CLIENT_GUIDE.md](UI_CLIENT_GUIDE.md).** It defines the backend commands, stats fields, privilege handling, and public-IP demonstration.
 
 ## Current commands: multi-device internet VPN
