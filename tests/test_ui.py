@@ -33,6 +33,38 @@ def wait_for(predicate, timeout=10):
     raise AssertionError('timed out waiting for condition')
 
 
+class StartupTests(unittest.TestCase):
+    def test_blocked_desktop_browser_does_not_block_http(self):
+        entered, release = threading.Event(), threading.Event()
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', '2')
+                self.end_headers()
+                self.wfile.write(b'OK')
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        def blocked_browser(url):
+            entered.set()
+            release.wait(5)
+            return True
+        try:
+            with unittest.mock.patch('webbrowser.open', side_effect=blocked_browser):
+                app.start_server_and_browser(server, 'http://127.0.0.1:%d/' % server.server_port)
+                self.assertTrue(entered.wait(2))
+                conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=2)
+                try:
+                    conn.request('GET', '/')
+                    self.assertEqual(conn.getresponse().read(), b'OK')
+                finally:
+                    conn.close()
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+
+
 class ValidationTests(unittest.TestCase):
     good = dict(server_ip='203.0.113.10', port=5555, dashboard_port=5000, internet=True, psk=PSK)
 

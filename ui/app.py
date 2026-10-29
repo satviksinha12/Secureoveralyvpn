@@ -520,6 +520,20 @@ def make_handler(ui, token, allowed_hosts):
     return Handler
 
 
+def start_server_and_browser(server, url, open_browser=True):
+    """Serve first; desktop browser helpers must never block the local UI."""
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    if open_browser:
+        def launch():
+            import webbrowser
+            try:
+                if not webbrowser.open(url):
+                    print('Browser did not open automatically; use the URL printed above.', flush=True)
+            except Exception:
+                print('Browser launch failed; use the URL printed above.', flush=True)
+        threading.Thread(target=launch, daemon=True).start()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1', help='Loopback only unless you add your own protection')
@@ -540,13 +554,10 @@ def main():
     server.daemon_threads = True
     url = 'http://127.0.0.1:%d/?token=%s' % (args.port, token)
     print('Secure Overlay VPN UI: %s' % url, flush=True)
-    if not args.no_browser:
-        import webbrowser
-        webbrowser.open(url)
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    start_server_and_browser(server, url, open_browser=not args.no_browser)
     try:
         stop.wait()
     finally:
