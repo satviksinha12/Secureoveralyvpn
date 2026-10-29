@@ -67,6 +67,25 @@ downloads are usable.
 
 Stopping the launcher with Ctrl+C also disconnects, waiting for route cleanup.
 
+### If traffic does not route
+
+Run the read-only preflight on the machine that has the problem. It needs no PSK and changes nothing:
+
+```bash
+sudo .venv/bin/python ui/doctor.py --role client --server VM_EXTERNAL_IPV4   # on the client
+sudo .venv/bin/python ui/doctor.py --role server                             # on the VM
+```
+
+It checks Linux/TUN/iproute2/iptables, the virtualenv and `cryptography`, leftover routes or a stale `tun0` from another
+VPN, the dashboard port, forwarding and NAT rules on the server, and reminds you of the checks only the cloud console
+can answer (UDP 5555 open from any IPv4, server running without `--peer-ip`, same repo version on both ends).
+
+Common causes: a client running on macOS/Windows (the backend is Linux-only), the server started without `--internet`
+or without `iptables`, UDP 5555 blocked, a PSK that does not match, and routes left behind by another VPN.
+
+The launcher accepts group-writable project files when the group is your own private group (the Ubuntu/Debian default
+umask 002 produces that on every clone); it refuses world-writable files or files writable by a shared group.
+
 ## What the guide asked for, and where it lives
 
 | Guide requirement | Implementation |

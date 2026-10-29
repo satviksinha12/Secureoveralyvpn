@@ -308,12 +308,30 @@ def bind_socket(path, uid):
     return server
 
 
+def private_group(gid, uid):
+    """True if `uid` is the only member of group `gid` (Ubuntu-style user-private group)."""
+    import grp
+    import pwd
+    try:
+        user, group = pwd.getpwuid(uid), grp.getgrgid(gid)
+    except KeyError:
+        return False
+    if user.pw_gid != gid or any(name != user.pw_name for name in group.gr_mem):
+        return False
+    return all(entry.pw_uid == uid for entry in pwd.getpwall() if entry.pw_gid == gid)
+
+
 def check_trusted(paths, uid, strict):
-    """The launcher runs these files as root, so they must not be writable by other users."""
+    """The launcher runs these files as root, so they must not be writable by other users.
+
+    Group-write is fine when the group is the invoking user's private group (the default umask 002 on
+    Ubuntu/Debian makes every clone group-writable): nobody gains write access they did not already have.
+    """
     for path in paths:
         info = os.stat(path)
-        if info.st_mode & 0o022:
-            raise SystemExit('Refusing to run: %s is writable by group or others' % path)
+        if info.st_mode & 0o002 or (info.st_mode & 0o020 and not private_group(info.st_gid, uid)):
+            raise SystemExit('Refusing to run: %s is writable by users other than its owner. '
+                             'Run `chmod go-w` on it, or keep it in a private group.' % path)
         if info.st_uid not in (0, uid):
             raise SystemExit('Refusing to run: %s belongs to an unexpected user' % path)
         if strict and info.st_uid != 0:
