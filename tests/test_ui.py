@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from ui import app, launcher
@@ -60,6 +61,34 @@ class ValidationTests(unittest.TestCase):
         self.assertNotIn(PSK, redact('secret ' + PSK))
         self.assertEqual(redact('run --psk abc123 now'), 'run --psk [redacted] now')
         self.assertEqual(redact('VPN_PSK=abc'), 'VPN_PSK=[redacted]')
+
+
+class TrustCheckTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, 'vpn.py')
+        Path(self.path).write_text('')
+
+    def check(self, mode, private):
+        os.chmod(self.path, mode)
+        with unittest.mock.patch.object(launcher, 'private_group', return_value=private):
+            launcher.check_trusted([self.path], os.getuid(), False)
+
+    def test_owner_only_and_default_modes_are_accepted(self):
+        self.check(0o644, False)
+
+    def test_group_write_is_accepted_only_for_a_private_group(self):
+        self.check(0o664, True)  # Ubuntu default umask 002
+        with self.assertRaises(SystemExit):
+            self.check(0o664, False)
+
+    def test_world_write_is_always_refused(self):
+        with self.assertRaises(SystemExit):
+            self.check(0o666, True)
+
+    def test_strict_requires_root_ownership(self):
+        with self.assertRaises(SystemExit):
+            launcher.check_trusted([self.path], os.getuid(), True) if os.getuid() else self.skipTest('root')
 
 
 class LauncherTestCase(unittest.TestCase):
