@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, quote
 from urllib.request import build_opener, ProxyHandler
 
 PROJECT = Path(__file__).resolve().parent.parent
@@ -253,24 +253,49 @@ class Downloads:
             job['exit_code'] = proc.returncode
             job['finished'] = time.time()
             match = RESULT.search(stdout or '')
-            if job['cancel_requested']:
-                job['state'] = 'cancelled'
-                job['message'] = 'Download cancelled; the partial file was discarded'
-            elif proc.returncode == 0 and match:
+            if proc.returncode == 0 and match:
+                try:
+                    info = os.stat(job['output'], follow_symlinks=False)
+                except OSError:
+                    job.update(state='error', message='Downloaded file is no longer available')
+                    return
                 job.update(state='done', verified=match.group(1) == 'PASS', bytes=int(match.group(2)),
-                           sha256=match.group(3))
+                           sha256=match.group(3), file_identity=[info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns])
                 job['message'] = ('Checksum verified' if job['verified']
                                   else 'Downloaded; no expected checksum was supplied, so content is not independently verified')
+            elif job['cancel_requested']:
+                job['state'] = 'cancelled'
+                job['message'] = 'Download cancelled'
             else:
                 job['state'] = 'error'
                 text = (stderr or stdout or '').strip().splitlines()
                 job['message'] = SECRET_ARGS.sub(r'\1[redacted]', text[-1]) if text else 'Download failed (exit code %s)' % proc.returncode
+
+    def open_completed(self, job_id):
+        """Open only this app's latest completed result, never an arbitrary path."""
+        with self.lock:
+            if not self.job or self.job['id'] != job_id or self.job['state'] != 'done':
+                raise UserError('Completed download not found; finish a download first')
+            job = dict(self.job)
+        try:
+            fd = os.open(job['output'], os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
+            source = os.fdopen(fd, 'rb')
+            info = os.fstat(source.fileno())
+            identity = [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
+            if identity != job['file_identity']:
+                source.close()
+                raise UserError('Downloaded file changed; download it again before saving')
+            return source, Path(job['output']).name, info.st_size
+        except OSError:
+            raise UserError('Downloaded file is no longer available') from None
 
     def cancel(self):
         """SIGINT lets the tool delete its temporary file; escalate to SIGTERM only if it hangs."""
         with self.lock:
             job, proc = self.job, self.proc
             if not job or job['state'] != 'running':
+                return
+            if proc.poll() is not None:
                 return
             job['cancel_requested'] = True
         try:
@@ -466,6 +491,25 @@ def make_handler(ui, token, allowed_hosts):
             if parts.path in STATIC_FILES:
                 name, kind = STATIC_FILES[parts.path]
                 return self.send(200, (STATIC / name).read_bytes(), kind)
+            if parts.path == '/api/download/file':
+                try:
+                    job_id = int(parse_qs(parts.query).get('job', ['0'])[0])
+                    source, filename, length = ui.downloads.open_completed(job_id)
+                except (ValueError, UserError) as exc:
+                    return self.reply(404, dict(error=str(exc)))
+                with source:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/octet-stream')
+                    self.send_header('Content-Length', str(length))
+                    self.send_header('Content-Disposition', "attachment; filename=download.bin; filename*=UTF-8''" + quote(filename, safe=''))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('X-Content-Type-Options', 'nosniff')
+                    self.end_headers()
+                    try:
+                        shutil.copyfileobj(source, self.wfile, length=256 * 1024)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+                return
             if parts.path == '/api/status':
                 return self.reply(200, ui.status())
             if parts.path == '/api/logs':

@@ -224,6 +224,12 @@ function renderDownload(s) {
       if (text.startsWith('SHA-256')) line.className = 'mono';
       box.appendChild(line);
     }
+    const save = document.createElement('a');
+    save.href = '/api/download/file?job=' + encodeURIComponent(job.id);
+    save.textContent = 'Save to computer';
+    save.className = 'download-save';
+    save.setAttribute('download', '');
+    box.appendChild(save);
   }
   show(box, true);
 }

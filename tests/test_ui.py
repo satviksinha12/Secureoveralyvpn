@@ -424,6 +424,14 @@ class DownloadTests(HTTPTestCase):
         self.assertEqual((job['state'], job['bytes'], job['sha256'], job['verified']),
                          ('done', len(self.payload), digest, True))
         self.assertEqual(Path(self.dest + '-ok').read_bytes(), self.payload)
+        response, saved = self.fetch('GET', '/api/download/file?job=' + str(job['id']))
+        self.assertEqual(response.status, 200)
+        self.assertIn('attachment', response.getheader('Content-Disposition'))
+        self.assertEqual(saved, self.payload)
+        self.assertEqual(self.fetch('GET', '/api/download/file?job=' + str(job['id']), cookie=False)[0].status, 401)
+        self.assertEqual(self.fetch('GET', '/api/download/file?job=999999')[0].status, 404)
+        Path(self.dest + '-ok').write_bytes(b'changed after download')
+        self.assertEqual(self.fetch('GET', '/api/download/file?job=' + str(job['id']))[0].status, 404)
         self.assertEqual(self.post('/api/download', dict(url='http://127.0.0.1:1/x', destination=self.dest + '-ok'))[0], 400)
 
     def test_checksum_mismatch_is_reported_and_leaves_no_file_or_temp(self):
@@ -434,6 +442,47 @@ class DownloadTests(HTTPTestCase):
         self.assertEqual(job['state'], 'error')
         self.assertFalse(os.path.exists(self.dest + '-bad'))
         self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith('.pyvpn-download-')], [])
+
+    def test_short_response_without_hash_is_rejected(self):
+        code, _ = self.post('/api/download', dict(url=self.base + '/short', destination=self.dest + '-truncated'))
+        self.assertEqual(code, 200)
+        job = wait_for(lambda: (j := self.status()['download']) and j['state'] != 'running' and j)
+        self.assertEqual(job['state'], 'error')
+        self.assertIn('Incomplete download', job['message'])
+        self.assertFalse(Path(self.dest + '-truncated').exists())
+        self.assertEqual(self.fetch('GET', '/api/download/file?job=' + str(job['id']))[0].status, 404)
+
+    def test_manifest_download_through_ui_api(self):
+        import hashlib
+        digest = hashlib.sha256(self.payload).hexdigest()
+        payload = self.payload
+        class Source(BaseHTTPRequestHandler):
+            def do_GET(inner):
+                if inner.path == '/manifest':
+                    content = json.dumps(dict(name='sample.bin', bytes=len(payload), sha256=digest)).encode()
+                else:
+                    content = payload
+                inner.send_response(200)
+                inner.send_header('Content-Length', str(len(content)))
+                inner.end_headers()
+                inner.wfile.write(content)
+            def log_message(inner, *args):
+                pass
+        source = ThreadingHTTPServer(('127.0.0.1', 0), Source)
+        threading.Thread(target=source.serve_forever, daemon=True).start()
+        try:
+            code, body = self.post('/api/download', dict(mode='vpn', url='http://127.0.0.1:%d' % source.server_port,
+                                                        destination=self.dest + '-manifest'))
+            self.assertEqual(code, 200, body)
+            job = wait_for(lambda: (j := self.status()['download']) and j['state'] != 'running' and j)
+            self.assertEqual(job['state'], 'done')
+            self.assertTrue(job['verified'])
+            response, saved = self.fetch('GET', '/api/download/file?job=' + str(job['id']))
+            self.assertEqual(response.status, 200)
+            self.assertEqual(hashlib.sha256(saved).hexdigest(), digest)
+        finally:
+            source.shutdown()
+            source.server_close()
 
     def test_cancel_removes_temporary_file(self):
         code, _ = self.post('/api/download', dict(url=self.base + '/slow', destination=self.dest + '-cancel'))

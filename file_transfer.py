@@ -102,6 +102,10 @@ def download(url, output, expected_hash=None, expected_size=None):
         actual = hashlib.sha256()
         size = 0
         with os.fdopen(fd, 'wb') as dest, urlopen(url, timeout=60) as source:
+            header = getattr(source, 'headers', {}).get('Content-Length')
+            content_length = int(header) if header is not None else None
+            if content_length is not None and content_length < 0:
+                raise ValueError('Invalid response Content-Length')
             while True:
                 block = source.read(1024 * 1024)
                 if not block:
@@ -109,6 +113,8 @@ def download(url, output, expected_hash=None, expected_size=None):
                 dest.write(block)
                 actual.update(block)
                 size += len(block)
+        if content_length is not None and size != content_length:
+            raise ValueError('Incomplete download: received fewer or more bytes than Content-Length')
         if ((expected_size is not None and size != expected_size)
                 or (expected_hash is not None and actual.hexdigest() != expected_hash)):
             raise ValueError('Download checksum or length mismatch')

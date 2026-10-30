@@ -2,6 +2,8 @@
 
 **Separate client application:** [standalone_client/README.md](standalone_client/README.md). It runs independently of the original UI: Linux VPN client plus a Windows interface preview. Package it with `python3 scripts/package_client.py`.
 
+**Merged UI downloads:** open the Download files card, enter a direct file URL, then use **Save to computer** after completion. See [ui/README.md](ui/README.md#download-a-file-from-the-merged-ui).
+
 **Building the client UI? Start with [UI_CLIENT_GUIDE.md](UI_CLIENT_GUIDE.md).** It defines the backend commands, stats fields, privilege handling, and public-IP demonstration.
 
 ## Current commands: multi-device internet VPN

@@ -104,6 +104,25 @@ umask 002 produces that on every clone); it refuses world-writable files or file
 | Honest errors (state mismatch, port conflict, TUN) | Backend's last `ERROR` line and exit code are shown; a busy dashboard port is reported before launching. Nothing is deleted or reset to hide an error. |
 | Disconnect or visibly keep running when the UI closes | Default: UI disconnects before exiting. `--keep-connection` leaves it running and shows a Disconnect control next time. |
 
+## Download a file from the merged UI
+
+1. Start the UI and open its fresh authenticated URL.
+2. In **Download files**, select **Public file (HTTPS)**.
+3. Enter a complete direct file URL, for example `https://www.rfc-editor.org/rfc/rfc791.txt`.
+4. Choose a new filename under **Save as**, or leave it empty for the URL filename.
+5. Click **Download** and wait for the result showing bytes, SHA-256, and local path.
+6. Click **Save to computer** to save the completed file using the browser's download dialog/folder.
+
+The app keeps its first copy under the project's results/ folder unless an absolute destination was selected. The browser save link is authenticated and serves only the latest successfully completed job; it cannot read arbitrary paths. If the downloaded file changes or disappears, the link refuses to serve it. Starting a new job replaces the prior job's save link, so save your result before beginning the next download.
+
+For **File served over the VPN**, run file_transfer.py serve on the cloud tunnel address, enter its base URL (for example http://10.8.0.1:8000), and download. The manifest supplies the expected size and SHA-256 automatically.
+
+A publisher hash is optional for public URLs. Declared HTTP Content-Length is checked even when no hash is provided, so a truncated response is rejected. Existing destination files are not overwritten. Without an expected SHA-256, a computed digest alone does not independently establish the publisher's content integrity.
+
+The interface does not require a VPN to download public files; when IPv4 gateway routing is enabled, those IPv4 connections follow it. DNS must work separately. If website names time out while numerical IPs respond, resolve that DNS issue before retrying; a working button cannot make an unreachable hostname resolve.
+
+Verified during development: a public RFC file downloaded through POST /api/download, status polling reported completion, and authenticated GET /api/download/file returned the same 94,892 bytes and SHA-256. This validates the UI/HTTP path, not the user's cloud/VPN DNS configuration.
+
 ## Security model
 
 * The UI binds to loopback and requires a random per-run token (set as an `HttpOnly`, `SameSite=Strict` cookie, then
@@ -135,8 +154,7 @@ happens on an untouched checkout too and is a macOS flock/SQLite interaction. Th
 ## Known limitations
 
 * Managed Connect needs Linux, root (via the launcher), and a running server; it cannot be exercised on macOS.
-* `file_transfer.py download` cannot detect a truncated body unless you give an expected SHA-256 (it only checks
-  length when a size is supplied). Supply the publisher's hash for independent verification.
+* Responses with a declared Content-Length are checked for truncation. For chunked/no-length public responses, supply the publisher's SHA-256 for independent verification.
 * The UI does not claim IPv6/DNS leak protection or a kill switch; neither exists in the backend.
 * Exit-IP matching assumes the VM's egress address equals its external address; clouds with a separate NAT address
   will show "differs from before connecting" instead of a match.

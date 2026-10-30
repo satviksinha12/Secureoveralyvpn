@@ -91,3 +91,6 @@ pre .w { color: #fbbf24; } pre .e { color: #f87171; } pre .l { color: #7aa7ff; }
   .stat .big { font-size: 19px; }
 }
 @media (prefers-reduced-motion: reduce) { .dot, .indeterminate span { animation: none !important; } }
+
+.download-save { display: inline-block; margin-top: 12px; padding: 9px 14px; border-radius: 8px; background: var(--accent); color: var(--accent-text); text-decoration: none; font-weight: 600; }
+.download-save:hover { filter: brightness(1.1); }
